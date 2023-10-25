@@ -155,6 +155,7 @@ def main(
     K: int = 4,
     temperature: float = 0.0,
     seed: int = 123,
+    multi_gpu: bool = False
 ):
     # seed numpy rng
     np.random.seed(seed)
@@ -170,7 +171,7 @@ def main(
     target_model = create_model_fn(target_params, target_hparams, temperature)
 
     # encode inputs
-    input_ids = encoder.encode(prompt)
+    input_ids: list = encoder.encode(prompt)
 
     def run_sampling_fn(decode_fn, input_ids, **kwargs):
         start = time.perf_counter()
@@ -197,15 +198,16 @@ def main(
         K=K,
     )
 
-    # speculative on multi gpu
-    speculative_multi_gpu_text, speculative_multi_gpu_time = run_sampling_fn(
-        speculative_sampling_on_multiple_gpus,
-        torch.from_numpy(input_ids),
-        target_model=torch.from_numpy(target_model),
-        draft_model=torch.from_numpy(draft_model),
-        N=n_tokens_to_generate,
-        K=K,
-    )
+    if multi_gpu:
+        # speculative on multi gpu
+        speculative_multi_gpu_text, speculative_multi_gpu_time = run_sampling_fn(
+            speculative_sampling_on_multiple_gpus,
+            torch.tensor(input_ids),
+            target_model=torch.from_numpy(target_model),
+            draft_model=torch.from_numpy(draft_model),
+            N=n_tokens_to_generate,
+            K=K,
+        )
 
     # print results
     print()
@@ -218,10 +220,11 @@ def main(
     print("------------------")
     print(f"Time = {speculative_time:.2f}s")
     print(f"Text = {speculative_text}")
-    print("Speculative Decode on Multiple GPUs")
-    print("------------------")
-    print(f"Time = {speculative_multi_gpu_time:.2f}s")
-    print(f"Text = {speculative_multi_gpu_text}")
+    if multi_gpu:
+        print("Speculative Decode on Multiple GPUs")
+        print("------------------")
+        print(f"Time = {speculative_multi_gpu_time:.2f}s")
+        print(f"Text = {speculative_multi_gpu_text}")
 
 
 if __name__ == "__main__":
