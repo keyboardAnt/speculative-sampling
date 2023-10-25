@@ -10,6 +10,8 @@ sys.path.append("picoGPT")
 from gpt2 import gpt2, softmax
 from utils import load_encoder_hparams_and_params
 
+import torch
+
 
 def max_fn(x):
     x_max = np.where(x > 0, x, 0)
@@ -51,6 +53,59 @@ def speculative_sampling(x, draft_model, target_model, N, K):
 
             # Step 2: target model forward passes on x_draft
             q = target_model(x_draft)
+
+            # Step 3: append draft tokens based on rejection criterion and resample
+            # a token on rejection
+            all_accepted = True
+            for _ in range(K):
+                i = n - 1
+                j = x_draft[i + 1]
+                if np.random.random() < min(1, q[i][j] / p[i][j]):  # accepted
+                    x = np.append(x, j)
+                    n += 1
+                else:  # rejected
+                    x = np.append(x, sample(max_fn(q[i] - p[i])))  # resample
+                    n += 1
+                    all_accepted = False
+                    break
+
+            # Step 4: if all draft tokens were accepted, sample a final token
+            if all_accepted:
+                x = np.append(x, sample(q[-1]))
+                n += 1
+
+            # just keeping my sanity
+            pbar.update(n - prev_n)
+            assert n == len(x), f"{n} {len(x)}"
+
+    return x
+
+
+def speculative_sampling_on_multiple_gpus(x, draft_model, target_model, N, K, multi_gpu: bool=False):
+    # NOTE: paper indexes arrays starting from 1, python indexes from 0, so
+    # we have to add an extra -1 term when indexing using n, T, or t
+    if multi_gpu:
+        draft_model.to(device="cuda:0", non_blocking=True)
+        target_model.to(device="cuda:1", non_blocking=True)
+    n = len(x)
+    T = len(x) + N
+
+    with tqdm(total=N, desc="speculative sampling") as pbar:
+        while n < T:
+            prev_n = n
+
+            # Step 1: auto-regressive decode K tokens from draft model and get final p
+            x_draft = x
+            for _ in range(K):
+                p = draft_model(x_draft)
+                x_draft = np.append(x_draft, sample(p[-1]))
+            if multi_gpu:
+                x_draft.to(device="cpu", non_blocking=True)
+
+            # Step 2: target model forward passes on x_draft
+            q = target_model(x_draft)
+            if multi_gpu:
+                q.to(device="cpu", non_blocking=True)
 
             # Step 3: append draft tokens based on rejection criterion and resample
             # a token on rejection
@@ -142,6 +197,16 @@ def main(
         K=K,
     )
 
+    # speculative on multi gpu
+    speculative_multi_gpu_text, speculative_multi_gpu_time = run_sampling_fn(
+        speculative_sampling_on_multiple_gpus,
+        torch.from_numpy(input_ids),
+        target_model=torch.from_numpy(target_model),
+        draft_model=torch.from_numpy(draft_model),
+        N=n_tokens_to_generate,
+        K=K,
+    )
+
     # print results
     print()
     print("Autoregressive Decode")
@@ -153,6 +218,10 @@ def main(
     print("------------------")
     print(f"Time = {speculative_time:.2f}s")
     print(f"Text = {speculative_text}")
+    print("Speculative Decode on Multiple GPUs")
+    print("------------------")
+    print(f"Time = {speculative_multi_gpu_time:.2f}s")
+    print(f"Text = {speculative_multi_gpu_text}")
 
 
 if __name__ == "__main__":
