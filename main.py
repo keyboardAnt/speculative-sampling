@@ -8,9 +8,11 @@ from tqdm import tqdm
 sys.path.append("picoGPT")
 
 from gpt2 import gpt2, softmax
+import gpt2_torch
 from utils import load_encoder_hparams_and_params
 
 import torch
+from torch import Tensor, nn
 
 
 def max_fn(x):
@@ -81,7 +83,7 @@ def speculative_sampling(x, draft_model, target_model, N, K):
     return x
 
 
-def speculative_sampling_on_multiple_gpus(x, draft_model, target_model, N, K, multi_gpu: bool=False):
+def speculative_sampling_on_multiple_gpus(x: Tensor, draft_model, target_model, N, K, multi_gpu: bool=False):
     # NOTE: paper indexes arrays starting from 1, python indexes from 0, so
     # we have to add an extra -1 term when indexing using n, T, or t
     if multi_gpu:
@@ -134,8 +136,11 @@ def speculative_sampling_on_multiple_gpus(x, draft_model, target_model, N, K, mu
     return x
 
 
-def create_model_fn(params, hparams, temperature, eps=1e-10):
-    f = functools.partial(gpt2, **params, n_head=hparams["n_head"])
+# def create_model_fn(params, hparams, temperature, eps=1e-10):
+def create_model_fn(params, hparams, temperature, eps=1e-10, multi_gpu: bool = False):
+    model = gpt2_torch.gpt2 if multi_gpu else gpt2
+    # f = functools.partial(gpt2, **params, n_head=hparams["n_head"])
+    f = functools.partial(model, **params, n_head=hparams["n_head"])
 
     def model_fn(inputs):
         logits = f(inputs)
@@ -167,8 +172,8 @@ def main(
     _, target_hparams, target_params = load_encoder_hparams_and_params(
         target_model_size, models_dir
     )
-    draft_model = create_model_fn(draft_params, draft_hparams, temperature)
-    target_model = create_model_fn(target_params, target_hparams, temperature)
+    draft_model = create_model_fn(draft_params, draft_hparams)
+    target_model = create_model_fn(target_params, target_hparams)
 
     # encode inputs
     input_ids: list = encoder.encode(prompt)
@@ -199,12 +204,15 @@ def main(
     )
 
     if multi_gpu:
+        # draft_model = create_model_fn(draft_params, draft_hparams, temperature, multi_gpu=multi_gpu)
+        # target_model = create_model_fn(target_params, target_hparams, temperature, multi_gpu=multi_gpu)
+        # draft_model: nn.Module = 
         # speculative on multi gpu
         speculative_multi_gpu_text, speculative_multi_gpu_time = run_sampling_fn(
-            speculative_sampling_on_multiple_gpus,
-            torch.tensor(input_ids),
-            target_model=torch.from_numpy(target_model),
-            draft_model=torch.from_numpy(draft_model),
+            decode_fn=speculative_sampling_on_multiple_gpus,
+            input_ids=torch.tensor(input_ids),
+            target_model=target_model,
+            draft_model=draft_model,
             N=n_tokens_to_generate,
             K=K,
         )
